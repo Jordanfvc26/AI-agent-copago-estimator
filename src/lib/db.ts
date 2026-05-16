@@ -9,62 +9,31 @@ export interface Policy {
   coverage_percentage: number;
 }
 
-// Global cached db instance for the Next.js serverless/dev environment
-let dbInstance: Database | null = null;
+let cachedDb: Database | null = null;
 
-async function getDb(): Promise<Database> {
-  if (dbInstance) return dbInstance;
-
+async function getDatabase(): Promise<Database> {
+  if (cachedDb) return cachedDb;
   const SQL = await initSqlJs();
   const dbPath = path.join(process.cwd(), "data", "policies.db");
-  const fileBuffer = fs.readFileSync(dbPath);
-  dbInstance = new SQL.Database(fileBuffer);
-  return dbInstance;
+  cachedDb = new SQL.Database(fs.readFileSync(dbPath));
+  return cachedDb;
 }
 
-/**
- * Look up a policy by exact policy number match (case-insensitive).
- */
+function rowToPolicy(columns: string[], row: unknown[]): Policy {
+  return Object.fromEntries(columns.map((col, i) => [col, row[i]])) as unknown as Policy;
+}
+
 export async function lookupPolicy(policyNumber: string): Promise<Policy | null> {
   try {
-    const db = await getDb();
+    const db = await getDatabase();
     const normalized = policyNumber.trim().toUpperCase();
+    const result = db.exec("SELECT * FROM policies WHERE UPPER(policy_number) = ?", [normalized]);
 
-    const result = db.exec(
-      "SELECT * FROM policies WHERE UPPER(policy_number) = ?",
-      [normalized]
-    );
+    if (!result.length || !result[0].values.length) return null;
 
-    if (result.length > 0 && result[0].values.length > 0) {
-      const cols = result[0].columns;
-      const row = result[0].values[0];
-      const found = Object.fromEntries(cols.map((c, i) => [c, row[i]])) as unknown as Policy;
-      console.log(`[DB] Policy found in SQLite: ${found.policy_number} → ${found.insurance_plan} (${found.coverage_percentage}%)`);
-      return found;
-    } else {
-      console.warn(`[DB] Policy not found in SQLite: "${policyNumber}"`);
-      return null;
-    }
+    return rowToPolicy(result[0].columns, result[0].values[0]);
   } catch (error) {
-    console.error("[DB] Error looking up policy:", error);
+    console.error("[DB] lookupPolicy failed:", error);
     return null;
-  }
-}
-
-/**
- * List all available policies (for debugging).
- */
-export async function listPolicies(): Promise<Policy[]> {
-  try {
-    const db = await getDb();
-    const result = db.exec("SELECT * FROM policies");
-    if (result.length === 0) return [];
-    const cols = result[0].columns;
-    return result[0].values.map(
-      (row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])) as unknown as Policy
-    );
-  } catch (error) {
-    console.error("[DB] Error listing policies:", error);
-    return [];
   }
 }

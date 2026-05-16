@@ -5,108 +5,57 @@ export type Signal =
   | { type: "HANDOFF_REQUESTED"; displayText: string }
   | { type: "NONE"; displayText: string };
 
-/**
- * Strip markdown code fences from a string.
- */
-function stripCodeFences(str: string): string {
-  let cleaned = str.replace(/^```[\w]*\s*\n?/gm, "");
-  cleaned = cleaned.replace(/\n?```\s*$/gm, "");
-  return cleaned.trim();
-}
+function extractJsonFromText(text: string): Record<string, unknown> | null {
+  const attempts = [
+    () => JSON.parse(text.trim()),
+    () => JSON.parse(text.replace(/^```[\w]*\s*\n?/gm, "").replace(/\n?```\s*$/gm, "").trim()),
+    () => {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      return start !== -1 && end > start ? JSON.parse(text.slice(start, end + 1)) : null;
+    },
+  ];
 
-/**
- * Try to extract JSON from a string that may contain markdown formatting.
- */
-function extractJSON(str: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(str.trim());
-  } catch {
-    // ignore
-  }
-
-  try {
-    return JSON.parse(stripCodeFences(str));
-  } catch {
-    // ignore
-  }
-
-  const firstBrace = str.indexOf("{");
-  const lastBrace = str.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
+  for (const attempt of attempts) {
     try {
-      return JSON.parse(str.slice(firstBrace, lastBrace + 1));
-    } catch {
-      // ignore
-    }
+      const result = attempt();
+      if (result) return result;
+    } catch { /* continue */ }
   }
-
   return null;
 }
 
+function extractSignalPayload(raw: string, pattern: RegExp): { displayText: string; afterMarker: string } | null {
+  const match = raw.match(pattern);
+  if (!match || match.index === undefined) return null;
+  return {
+    displayText: raw.slice(0, match.index).trim(),
+    afterMarker: raw.slice(match.index + match[0].length).trim(),
+  };
+}
+
 export function parseSignal(raw: string): Signal {
-  // ── 1. COPAY_READY ──────────────────────────────────────────────────────────
-  const copayPattern = /COPAY_READY\s*:?\s*/;
-  const copayMatch = raw.match(copayPattern);
-
-  if (copayMatch && copayMatch.index !== undefined) {
-    const displayText = raw.slice(0, copayMatch.index).trim();
-    const afterMarker = raw.slice(copayMatch.index + copayMatch[0].length).trim();
-    const data = extractJSON(afterMarker);
-
-    if (data) {
-      return {
-        type: "COPAY_READY",
-        data: {
-          symptomDescription: (data.symptomDescription as string) || "",
-          policyNumber: (data.policyNumber as string) || "",
-        },
-        displayText,
-      };
-    }
+  const copayPayload = extractSignalPayload(raw, /COPAY_READY\s*:?\s*/);
+  if (copayPayload) {
+    const data = extractJsonFromText(copayPayload.afterMarker);
+    if (data) return { type: "COPAY_READY", data: { symptomDescription: (data.symptomDescription as string) || "", policyNumber: (data.policyNumber as string) || "" }, displayText: copayPayload.displayText };
   }
 
-  // ── 2. SYMPTOM_IDENTIFIED ───────────────────────────────────────────────────
-  const symptomPattern = /SYMPTOM_IDENTIFIED\s*:?\s*/;
-  const symptomMatch = raw.match(symptomPattern);
-
-  if (symptomMatch && symptomMatch.index !== undefined) {
-    const displayText = raw.slice(0, symptomMatch.index).trim();
-    const afterMarker = raw.slice(symptomMatch.index + symptomMatch[0].length).trim();
-    const data = extractJSON(afterMarker);
-
-    if (data && typeof data.symptomDescription === "string") {
-      return {
-        type: "SYMPTOM_IDENTIFIED",
-        data: { symptomDescription: data.symptomDescription as string },
-        displayText,
-      };
-    }
+  const symptomPayload = extractSignalPayload(raw, /SYMPTOM_IDENTIFIED\s*:?\s*/);
+  if (symptomPayload) {
+    const data = extractJsonFromText(symptomPayload.afterMarker);
+    if (data && typeof data.symptomDescription === "string") return { type: "SYMPTOM_IDENTIFIED", data: { symptomDescription: data.symptomDescription }, displayText: symptomPayload.displayText };
   }
 
-  // ── 3. POLICY_LOOKUP ────────────────────────────────────────────────────────
-  const policyPattern = /POLICY_LOOKUP\s*:?\s*/;
-  const policyMatch = raw.match(policyPattern);
-
-  if (policyMatch && policyMatch.index !== undefined) {
-    const displayText = raw.slice(0, policyMatch.index).trim();
-    const afterMarker = raw.slice(policyMatch.index + policyMatch[0].length).trim();
-    const data = extractJSON(afterMarker);
-
-    if (data && typeof data.policyNumber === "string") {
-      return {
-        type: "POLICY_LOOKUP",
-        data: { policyNumber: data.policyNumber as string },
-        displayText,
-      };
-    }
+  const policyPayload = extractSignalPayload(raw, /POLICY_LOOKUP\s*:?\s*/);
+  if (policyPayload) {
+    const data = extractJsonFromText(policyPayload.afterMarker);
+    if (data && typeof data.policyNumber === "string") return { type: "POLICY_LOOKUP", data: { policyNumber: data.policyNumber }, displayText: policyPayload.displayText };
   }
 
-  // ── 4. HANDOFF_REQUESTED ────────────────────────────────────────────────────
   if (raw.includes("HANDOFF_REQUESTED")) {
-    const displayText = raw.replace(/HANDOFF_REQUESTED/g, "").trim();
-    return { type: "HANDOFF_REQUESTED", displayText };
+    return { type: "HANDOFF_REQUESTED", displayText: raw.replace(/HANDOFF_REQUESTED/g, "").trim() };
   }
 
-  // ── 5. Normal message ───────────────────────────────────────────────────────
   return { type: "NONE", displayText: raw };
 }
